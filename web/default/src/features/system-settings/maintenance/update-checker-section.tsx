@@ -34,6 +34,102 @@ type ReleaseInfo = {
   published_at?: string
 }
 
+type GiteeTag = {
+  name?: string
+  message?: string
+  commit?: {
+    date?: string
+  }
+}
+
+const updateSourceOwner =
+  import.meta.env.VITE_REACT_APP_UPDATE_SOURCE_OWNER || 'LiuJiaSen'
+const updateSourceRepo =
+  import.meta.env.VITE_REACT_APP_UPDATE_SOURCE_REPO || 'new-api'
+const updateSourceBaseURL =
+  import.meta.env.VITE_REACT_APP_UPDATE_SOURCE_BASE_URL || 'https://gitee.com'
+const giteeApiBaseURL =
+  import.meta.env.VITE_REACT_APP_GITEE_API_BASE_URL ||
+  'https://gitee.com/api/v5'
+
+const normalizeBaseURL = (url: string) => url.replace(/\/+$/, '')
+
+const buildUpdateSourceURL = (path: string) => {
+  const baseURL = normalizeBaseURL(updateSourceBaseURL)
+  return `${baseURL}/${updateSourceOwner}/${updateSourceRepo}${path}`
+}
+
+const toReleaseInfoFromTag = (tag: GiteeTag): ReleaseInfo | null => {
+  if (!tag.name) {
+    return null
+  }
+
+  return {
+    tag_name: tag.name,
+    name: tag.name,
+    body: tag.message || '',
+    html_url: buildUpdateSourceURL(`/tree/${encodeURIComponent(tag.name)}`),
+    published_at: tag.commit?.date,
+  }
+}
+
+const pickLatestTag = (tags: GiteeTag[]) => {
+  const validTags = tags.filter((tag) => tag.name)
+  if (validTags.length === 0) {
+    return null
+  }
+
+  return validTags.reduce((latest, tag) => {
+    const latestTime = latest.commit?.date
+      ? new Date(latest.commit.date).getTime()
+      : 0
+    const tagTime = tag.commit?.date ? new Date(tag.commit.date).getTime() : 0
+    return tagTime > latestTime ? tag : latest
+  })
+}
+
+const fetchLatestGiteeRelease = async (): Promise<ReleaseInfo> => {
+  const apiBaseURL = normalizeBaseURL(giteeApiBaseURL)
+  const encodedOwner = encodeURIComponent(updateSourceOwner)
+  const encodedRepo = encodeURIComponent(updateSourceRepo)
+  const releaseResponse = await fetch(
+    `${apiBaseURL}/repos/${encodedOwner}/${encodedRepo}/releases/latest`,
+    {
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  )
+
+  if (releaseResponse.ok) {
+    const data = (await releaseResponse.json()) as ReleaseInfo
+    if (data?.tag_name) {
+      return data
+    }
+  }
+
+  const tagsResponse = await fetch(
+    `${apiBaseURL}/repos/${encodedOwner}/${encodedRepo}/tags?per_page=100`,
+    {
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  )
+
+  if (!tagsResponse.ok) {
+    throw new Error('Failed to check for updates')
+  }
+
+  const latestTag = pickLatestTag((await tagsResponse.json()) as GiteeTag[])
+  const releaseInfo = latestTag ? toReleaseInfoFromTag(latestTag) : null
+  if (!releaseInfo) {
+    throw new Error('Unexpected release payload')
+  }
+
+  return releaseInfo
+}
+
 type UpdateCheckerSectionProps = {
   currentVersion?: string | null
   startTime?: number | null
@@ -54,21 +150,7 @@ export function UpdateCheckerSection({
   const handleCheckUpdates = async () => {
     setChecking(true)
     try {
-      const response = await fetch(
-        'https://api.github.com/repos/Calcium-Ion/new-api/releases/latest',
-        {
-          headers: {
-            Accept: 'application/vnd.github+json',
-            'User-Agent': 'new-api-dashboard',
-          },
-        }
-      )
-
-      if (!response.ok) {
-        throw new Error(t('Failed to contact GitHub releases API'))
-      }
-
-      const data = (await response.json()) as ReleaseInfo
+      const data = await fetchLatestGiteeRelease()
       if (!data?.tag_name) {
         throw new Error(t('Unexpected release payload'))
       }
@@ -87,7 +169,7 @@ export function UpdateCheckerSection({
     } catch (error) {
       const message =
         error instanceof Error
-          ? error.message
+          ? t(error.message)
           : t('Failed to check for updates')
       toast.error(message)
     } finally {

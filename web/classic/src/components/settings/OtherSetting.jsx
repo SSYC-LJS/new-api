@@ -235,29 +235,64 @@ const OtherSetting = () => {
         ...loadingInput,
         CheckUpdate: true,
       }));
-      // Use a CORS proxy to avoid direct cross-origin requests to GitHub API
-      // Option 1: Use a public CORS proxy service
-      // const proxyUrl = 'https://cors-anywhere.herokuapp.com/';
-      // const res = await API.get(
-      //   `${proxyUrl}https://api.github.com/repos/Calcium-Ion/new-api/releases/latest`,
-      // );
+      const owner =
+        import.meta.env.VITE_REACT_APP_UPDATE_SOURCE_OWNER || 'LiuJiaSen';
+      const repo =
+        import.meta.env.VITE_REACT_APP_UPDATE_SOURCE_REPO || 'new-api';
+      const apiBaseUrl = (
+        import.meta.env.VITE_REACT_APP_GITEE_API_BASE_URL ||
+        'https://gitee.com/api/v5'
+      ).replace(/\/+$/, '');
+      const sourceBaseUrl = (
+        import.meta.env.VITE_REACT_APP_UPDATE_SOURCE_BASE_URL ||
+        'https://gitee.com'
+      ).replace(/\/+$/, '');
+      const encodedOwner = encodeURIComponent(owner);
+      const encodedRepo = encodeURIComponent(repo);
 
-      // Option 2: Use the JSON proxy approach which often works better with GitHub API
-      const res = await fetch(
-        'https://api.github.com/repos/Calcium-Ion/new-api/releases/latest',
+      let res = await fetch(
+        `${apiBaseUrl}/repos/${encodedOwner}/${encodedRepo}/releases/latest`,
         {
           headers: {
             Accept: 'application/json',
-            'Content-Type': 'application/json',
-            // Adding User-Agent which is often required by GitHub API
-            'User-Agent': 'new-api-update-checker',
           },
         },
-      ).then((response) => response.json());
+      ).then((response) => (response.ok ? response.json() : null));
 
-      // Option 3: Use a local proxy endpoint
-      // Create a cached version of the response to avoid frequent GitHub API calls
-      // const res = await API.get('/api/status/github-latest-release');
+      if (!res?.tag_name) {
+        const tags = await fetch(
+          `${apiBaseUrl}/repos/${encodedOwner}/${encodedRepo}/tags?per_page=100`,
+          {
+            headers: {
+              Accept: 'application/json',
+            },
+          },
+        ).then((response) => {
+          if (!response.ok) {
+            throw new Error('检查 Gitee 更新源失败');
+          }
+          return response.json();
+        });
+        const latestTag = tags
+          .filter((tag) => tag.name)
+          .sort((a, b) => {
+            const aTime = a.commit?.date
+              ? new Date(a.commit.date).getTime()
+              : 0;
+            const bTime = b.commit?.date
+              ? new Date(b.commit.date).getTime()
+              : 0;
+            return bTime - aTime;
+          })[0];
+        if (!latestTag?.name) {
+          throw new Error('更新源返回内容异常');
+        }
+        res = {
+          tag_name: latestTag.name,
+          body: latestTag.message || '',
+          html_url: `${sourceBaseUrl}/${owner}/${repo}/tree/${encodeURIComponent(latestTag.name)}`,
+        };
+      }
 
       const { tag_name, body } = res;
       if (tag_name === statusState?.status?.version) {
